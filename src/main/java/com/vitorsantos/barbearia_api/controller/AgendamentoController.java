@@ -100,4 +100,27 @@ public class AgendamentoController {
     return agendamentoService.atualizarStatus(id, dto.novoStatus());
   }
 
+  @Operation(
+      summary = "Cliente confirma presença antes do dia do agendamento",
+      description = "Não muda o status do agendamento — só marca um selo que a fila (issues #7/#8) "
+          + "exibe pro barbeiro, indicando que esse cliente confirmou que vai comparecer.")
+  @ApiResponses({
+      @ApiResponse(
+          responseCode = "200",
+          description = "Presença confirmada com sucesso",
+          content = @Content(schema = @Schema(implementation = AgendamentoResponseDTO.class))),
+      @ApiResponse(
+          responseCode = "400",
+          description = "Agendamento já FINALIZADO ou CANCELADO, não pode ser confirmado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class))),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Agendamento não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
+  })
+  @PatchMapping("/{id}/confirmar-presenca")
+  public AgendamentoResponseDTO confirmarPresenca(@PathVariable Long id) {
+    return agendamentoService.confirmarPresenca(id);
+  }
+
 }
