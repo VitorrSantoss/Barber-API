@@ -5,8 +5,8 @@ import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 
-import com.vitorsantos.barbearia_api.enums.StatusAgendamento;
 import com.vitorsantos.barbearia_api.enums.ErrorCode;
+import com.vitorsantos.barbearia_api.enums.StatusAgendamento;
 import com.vitorsantos.barbearia_api.exception.ValidacaoException;
 
 import jakarta.persistence.Column;
@@ -31,11 +31,6 @@ import lombok.NoArgsConstructor;
 @Table(name = "tb_agendamentos")
 public class Agendamento {
 
-  /**
-   * Mapa de transições permitidas: de qual status, para quais status
-   * é possível ir. Isso concentra a regra num único lugar — se amanhã
-   * o fluxo mudar, só se mexe aqui.
-   */
   private static final Map<StatusAgendamento, Set<StatusAgendamento>> TRANSICOES_PERMITIDAS = Map.of(
       StatusAgendamento.AGENDADO, EnumSet.of(StatusAgendamento.AGUARDANDO, StatusAgendamento.CANCELADO),
       StatusAgendamento.AGUARDANDO, EnumSet.of(StatusAgendamento.EM_ATENDIMENTO, StatusAgendamento.CANCELADO),
@@ -63,17 +58,21 @@ public class Agendamento {
   @Column(name = "status_agendamento", nullable = false, length = 20)
   private StatusAgendamento statusAgendamento;
 
-  /**
-   * Timestamp de quando o cliente chegou fisicamente na barbearia
-   * (entrou na fila). Fica null até o status virar AGUARDANDO.
-   */
   @Column(name = "hora_chegada")
   private LocalDateTime horaChegada;
 
   /**
-   * Único jeito "correto" de mudar o status de um agendamento — valida
-   * a transição antes de aplicar. Preferir isso a um `setStatusAgendamento`
-   * direto, que não tem essa checagem.
+   * Selo de confiança: o cliente confirmou, ANTES do dia chegar, que vai
+   * comparecer. Não influencia a transição automática de status (que
+   * acontece só pela data) — é uma informação extra pro barbeiro decidir
+   * o quanto confiar que aquele cliente na fila vai aparecer de verdade.
+   * Default false — todo agendamento nasce sem confirmação.
+   */
+  @Column(name = "confirmado_pelo_cliente", nullable = false)
+  private boolean confirmadoPeloCliente = false;
+
+  /**
+   * Único jeito "correto" de mudar o status de um agendamento.
    *
    * @throws ValidacaoException se a transição não for permitida
    */
@@ -92,5 +91,26 @@ public class Agendamento {
     }
 
     this.statusAgendamento = novoStatus;
+  }
+
+  /**
+   * Confirmação de presença feita pelo cliente ANTES do dia do
+   * agendamento chegar (ex: respondeu "sim" num lembrete por WhatsApp).
+   * Só faz sentido enquanto o agendamento ainda está em andamento —
+   * confirmar um agendamento já FINALIZADO ou CANCELADO não tem efeito
+   * útil, então bloqueamos pra evitar dado inconsistente.
+   *
+   * @throws ValidacaoException se o agendamento já estiver FINALIZADO ou
+   *                            CANCELADO
+   */
+  public void confirmarPresenca() {
+    if (this.statusAgendamento == StatusAgendamento.FINALIZADO
+        || this.statusAgendamento == StatusAgendamento.CANCELADO) {
+      throw new ValidacaoException(
+          "Não é possível confirmar presença de um agendamento %s".formatted(this.statusAgendamento),
+          ErrorCode.CONFIRMACAO_INVALIDA);
+    }
+
+    this.confirmadoPeloCliente = true;
   }
 }
