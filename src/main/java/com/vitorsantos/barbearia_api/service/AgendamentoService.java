@@ -47,27 +47,42 @@ public class AgendamentoService {
     agendamento.setCliente(cliente);
     agendamento.setBarbeiro(barbeiro);
     agendamento.setDataHora(dto.dataHora());
-    agendamento.setStatusAgendamento(StatusAgendamento.AGENDADO); // todo agendamento nasce assim
+    agendamento.setStatusAgendamento(StatusAgendamento.AGENDADO);
+    agendamento.setConfirmadoPeloCliente(false);
 
     Agendamento agendamentoSalvo = agendamentoRepository.save(agendamento);
     return AgendamentoResponseDTO.fromEntity(agendamentoSalvo);
   }
 
   /**
-   * Aplica uma transição de status. A validação de "essa transição é
-   * permitida?" mora na própria entidade (Agendamento#mudarStatus) —
-   * aqui só busca o agendamento e delega.
+   * Transição manual de status (ex: EM_ATENDIMENTO -> FINALIZADO, feita
+   * pelo barbeiro). A transição AGENDADO -> AGUARDANDO também pode
+   * acontecer por aqui, mas na prática o job automático já faz isso —
+   * esse endpoint continua existindo para os outros passos do fluxo.
    */
   public AgendamentoResponseDTO atualizarStatus(Long id, StatusAgendamento novoStatus) {
-    Agendamento agendamento = agendamentoRepository.findById(id)
+    Agendamento agendamento = buscarOuFalhar(id);
+    agendamento.mudarStatus(novoStatus);
+    Agendamento agendamentoAtualizado = agendamentoRepository.save(agendamento);
+    return AgendamentoResponseDTO.fromEntity(agendamentoAtualizado);
+  }
+
+  /**
+   * Confirmação de presença feita pelo cliente ANTES do dia chegar.
+   * Não muda o status — só marca o selo que a fila exibe pro barbeiro.
+   */
+  public AgendamentoResponseDTO confirmarPresenca(Long id) {
+    Agendamento agendamento = buscarOuFalhar(id);
+    agendamento.confirmarPresenca();
+    Agendamento agendamentoAtualizado = agendamentoRepository.save(agendamento);
+    return AgendamentoResponseDTO.fromEntity(agendamentoAtualizado);
+  }
+
+  private Agendamento buscarOuFalhar(Long id) {
+    return agendamentoRepository.findById(id)
         .orElseThrow(() -> new ResourceNotFoundException(
             "Agendamento não encontrado com o ID: " + id,
             ErrorCode.AGENDAMENTO_NAO_ENCONTRADO));
-
-    agendamento.mudarStatus(novoStatus); // lança ValidacaoException se a transição for inválida
-
-    Agendamento agendamentoAtualizado = agendamentoRepository.save(agendamento);
-    return AgendamentoResponseDTO.fromEntity(agendamentoAtualizado);
   }
 
 }
