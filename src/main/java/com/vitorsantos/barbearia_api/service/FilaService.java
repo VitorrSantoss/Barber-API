@@ -66,7 +66,8 @@ public class FilaService {
               agendamento.getCliente().getId(),
               agendamento.getCliente().getNome(),
               indice + 1, // posição começa em 1, não em 0
-              agendamento.getHoraChegada());
+              agendamento.getHoraChegada(),
+              agendamento.isConfirmadoPeloCliente());
         })
         .toList();
   }
