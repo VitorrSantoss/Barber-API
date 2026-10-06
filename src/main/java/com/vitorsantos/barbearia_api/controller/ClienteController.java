@@ -42,6 +42,34 @@ public class ClienteController {
     return clienteService.listarClientes();
   }
 
+  @Operation(summary = "Busca um cliente pelo ID")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Cliente encontrado"),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Cliente não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
+  })
+  @GetMapping("/{id}")
+  public ClienteResponseDTO buscarCliente(@PathVariable Long id) {
+    return clienteService.buscarPorId(id);
+  }
+
+  @Operation(
+      summary = "Busca um cliente pelo telefone",
+      description = "O telefone é a chave de identificação do cliente. Aceita com ou sem máscara.")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Cliente encontrado"),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Nenhum cliente com esse telefone",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
+  })
+  @GetMapping("/telefone/{numero}")
+  public ClienteResponseDTO buscarClientePorTelefone(@PathVariable String numero) {
+    return clienteService.buscarPorTelefone(numero);
+  }
+
   @Operation(
       summary = "Cadastra um novo cliente",
       description = "O telefone é a chave de identificação do cliente e deve ser único. "
@@ -68,12 +96,19 @@ public class ClienteController {
         .body(clienteCriado);
   }
 
-  @Operation(summary = "Remove um cliente pelo ID")
+  @Operation(
+      summary = "Remove um cliente pelo ID",
+      description = "Cliente sem histórico é apagado; cliente com histórico de atendimentos é anonimizado "
+          + "(o histórico do barbeiro continua íntegro e o telefone fica livre para novo cadastro).")
   @ApiResponses({
       @ApiResponse(responseCode = "204", description = "Cliente removido com sucesso"),
       @ApiResponse(
           responseCode = "404",
           description = "Cliente não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class))),
+      @ApiResponse(
+          responseCode = "409",
+          description = "Cliente possui agendamento em aberto",
           content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
   })
   @DeleteMapping("/{id}")
