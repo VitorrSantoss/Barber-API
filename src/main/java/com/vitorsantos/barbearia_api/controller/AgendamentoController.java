@@ -16,6 +16,7 @@ import com.vitorsantos.barbearia_api.dto.AgendamentoRequestDTO;
 import com.vitorsantos.barbearia_api.dto.AgendamentoResponseDTO;
 import com.vitorsantos.barbearia_api.dto.AtualizarStatusAgendamentoDTO;
 import com.vitorsantos.barbearia_api.dto.ErrorResponseDTO;
+import com.vitorsantos.barbearia_api.dto.PosicaoFilaDTO;
 import com.vitorsantos.barbearia_api.service.AgendamentoService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -28,10 +29,9 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 /**
- * CRUD básico de Agendamento + endpoint de troca de status. É o troca de
- * status (PATCH .../status) que efetivamente move um cliente para a fila
- * (AGUARDANDO) — sem chamar esse endpoint, a fila da issue #7/#8 nunca
- * vai ter ninguém dentro pra você testar.
+ * Agendamentos (horário marcado ou entrada na fila) e controle de status.
+ * Fluxo: AGENDADO -> AGUARDANDO -> EM_ATENDIMENTO -> FINALIZADO, com
+ * CANCELADO a partir de AGENDADO ou AGUARDANDO.
  */
 @Tag(name = "Agendamentos", description = "Cadastro de agendamentos e controle de status (fila)")
 @RestController
@@ -41,17 +41,46 @@ public class AgendamentoController {
 
   private final AgendamentoService agendamentoService;
 
-  @Operation(summary = "Lista todos os agendamentos")
+  @Operation(summary = "Lista todos os agendamentos (mais recentes primeiro)")
   @ApiResponse(responseCode = "200", description = "Lista retornada com sucesso")
   @GetMapping
   public List<AgendamentoResponseDTO> listarAgendamentos() {
     return agendamentoService.listarAgendamentos();
   }
 
+  @Operation(summary = "Busca um agendamento pelo ID")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Agendamento encontrado"),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Agendamento não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
+  })
+  @GetMapping("/{id}")
+  public AgendamentoResponseDTO buscarAgendamento(@PathVariable Long id) {
+    return agendamentoService.buscarPorId(id);
+  }
+
   @Operation(
-      summary = "Cria um novo agendamento",
-      description = "O agendamento sempre nasce com status AGENDADO. Para movê-lo pela fila "
-          + "(AGUARDANDO -> EM_ATENDIMENTO -> FINALIZADO), use o endpoint de atualização de status.")
+      summary = "Consulta a posição do agendamento na fila do barbeiro",
+      description = "Posição 1 = próximo a ser atendido. Posição e pessoasAFrente vêm nulas quando o "
+          + "agendamento não está AGUARDANDO (ex: já em atendimento ou finalizado).")
+  @ApiResponses({
+      @ApiResponse(responseCode = "200", description = "Posição retornada"),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Agendamento não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
+  })
+  @GetMapping("/{id}/posicao")
+  public PosicaoFilaDTO consultarPosicao(@PathVariable Long id) {
+    return agendamentoService.consultarPosicao(id);
+  }
+
+  @Operation(
+      summary = "Cria um agendamento com horário marcado",
+      description = "O agendamento nasce AGENDADO e entra sozinho na fila (AGUARDANDO) quando a data/hora "
+          + "chega. Para entrar na fila na hora, use POST /barbeiros/{id}/fila.")
   @ApiResponses({
       @ApiResponse(
           responseCode = "201",
@@ -63,7 +92,11 @@ public class AgendamentoController {
           content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class))),
       @ApiResponse(
           responseCode = "404",
-          description = "Cliente ou barbeiro não encontrado",
+          description = "Cliente, barbeiro ou serviço não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class))),
+      @ApiResponse(
+          responseCode = "409",
+          description = "Barbeiro ou serviço inativo",
           content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
   })
   @PostMapping
@@ -77,8 +110,9 @@ public class AgendamentoController {
 
   @Operation(
       summary = "Atualiza o status de um agendamento",
-      description = "Ex: mandar { \"novoStatus\": \"AGUARDANDO\" } quando o cliente chega na "
-          + "barbearia — a partir daí ele passa a aparecer na fila do barbeiro (issues #7/#8).")
+      description = "Ex: { \"novoStatus\": \"FINALIZADO\" } para concluir o atendimento, ou "
+          + "{ \"novoStatus\": \"CANCELADO\" } para tirar o cliente da fila. Iniciar atendimento "
+          + "(EM_ATENDIMENTO) só é permitido para o primeiro da fila e com o barbeiro livre.")
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
@@ -91,6 +125,10 @@ public class AgendamentoController {
       @ApiResponse(
           responseCode = "404",
           description = "Agendamento não encontrado",
+          content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class))),
+      @ApiResponse(
+          responseCode = "409",
+          description = "Regra da fila violada (fora da ordem, barbeiro ocupado, cliente já na fila...)",
           content = @Content(schema = @Schema(implementation = ErrorResponseDTO.class)))
   })
   @PatchMapping("/{id}/status")
@@ -102,7 +140,7 @@ public class AgendamentoController {
 
   @Operation(
       summary = "Cliente confirma presença antes do dia do agendamento",
-      description = "Não muda o status do agendamento — só marca um selo que a fila (issues #7/#8) "
+      description = "Não muda o status do agendamento — só marca um selo que a fila "
           + "exibe pro barbeiro, indicando que esse cliente confirmou que vai comparecer.")
   @ApiResponses({
       @ApiResponse(
