@@ -7,8 +7,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.vitorsantos.barbearia_api.enums.StatusAgendamento;
-import com.vitorsantos.barbearia_api.models.Agendamento;
+import com.vitorsantos.barbearia_api.exception.BusinessException;
 import com.vitorsantos.barbearia_api.repository.AgendamentoRepository;
+import com.vitorsantos.barbearia_api.service.AgendamentoService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,10 +19,12 @@ import lombok.extern.slf4j.Slf4j;
  * quando a data/hora marcada chega — sem depender de nenhuma ação manual.
  *
  * IMPORTANTE: isso acontece independente de confirmadoPeloCliente. A
- * confirmação é só uma informação extra pro barbeiro (ver Agendamento);
- * ela não bloqueia nem acelera a entrada na fila. Se quiser mudar esse
- * comportamento no futuro (ex: só entrar na fila se confirmado), é aqui
- * que se ajusta a query.
+ * confirmação é só uma informação extra pro barbeiro (ver Agendamento).
+ *
+ * Cada agendamento é movido na sua própria transação, pelo mesmo caminho
+ * do endpoint de status (mesmos locks, regras e evento de WebSocket). Se um
+ * deles violar uma regra (ex: o cliente já está em outra fila), ele fica
+ * AGENDADO e os demais seguem normalmente.
  */
 @Slf4j
 @Component
@@ -29,26 +32,29 @@ import lombok.extern.slf4j.Slf4j;
 public class AgendamentoAutoStatusJob {
 
   private final AgendamentoRepository agendamentoRepository;
+  private final AgendamentoService agendamentoService;
 
-  /**
-   * Roda a cada 1 minuto (60_000 ms). Esse intervalo é um chute razoável
-   * pro estágio atual do projeto — se um dia isso rodar com muito volume
-   * de agendamento, vale revisar a frequência.
-   */
-  @Scheduled(fixedRate = 60_000)
+  @Scheduled(
+      fixedRateString = "${app.agendamentos.auto-status-intervalo-ms}",
+      initialDelayString = "${app.agendamentos.auto-status-intervalo-ms}")
   public void moverAgendamentosParaFila() {
-    List<Agendamento> agendamentosNaHora = agendamentoRepository
-        .findByStatusAgendamentoAndDataHoraLessThanEqual(StatusAgendamento.AGENDADO, LocalDateTime.now());
+    List<Long> idsNaHora = agendamentoRepository
+        .findIdsByStatusAndDataHoraAte(StatusAgendamento.AGENDADO, LocalDateTime.now());
 
-    if (agendamentosNaHora.isEmpty()) {
-      return;
+    int movidos = 0;
+    for (Long id : idsNaHora) {
+      try {
+        agendamentoService.atualizarStatus(id, StatusAgendamento.AGUARDANDO);
+        movidos++;
+      } catch (BusinessException ex) {
+        log.warn("Agendamento {} não pôde entrar na fila automaticamente: {}", id, ex.getMessage());
+      } catch (RuntimeException ex) {
+        log.error("Erro inesperado ao mover o agendamento {} para a fila", id, ex);
+      }
     }
 
-    agendamentosNaHora.forEach(agendamento -> agendamento.mudarStatus(StatusAgendamento.AGUARDANDO));
-
-    agendamentoRepository.saveAll(agendamentosNaHora);
-
-    log.info("{} agendamento(s) movido(s) automaticamente para AGUARDANDO", agendamentosNaHora.size());
+    if (movidos > 0) {
+      log.info("{} agendamento(s) movido(s) automaticamente para AGUARDANDO", movidos);
+    }
   }
-
 }
