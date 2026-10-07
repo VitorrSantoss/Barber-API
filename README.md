@@ -2,7 +2,7 @@
 
 API REST para gerenciar uma barbearia: clientes, barbeiros, serviços, agendamentos e uma **fila de atendimento independente para cada barbeiro**, com atualização em tempo real via WebSocket.
 
-> 🚧 **Em desenvolvimento.** Só o login do balcão do barbeiro existe; o restante da API ainda é aberto (ver [Limitações](#-limitações-conhecidas)). Não use em produção como está.
+> 🚧 **Funcional e testado, mas ainda não pronto para clientes reais.** A fila, os cadastros e o tempo real funcionam de ponta a ponta; o que falta é segurança, operação e conformidade. O caminho até a produção está em [Rumo à produção](#-rumo-à-produção).
 
 O front-end que consome esta API fica no repositório `Barbearia - Front` (React + Vite).
 
@@ -19,6 +19,7 @@ O front-end que consome esta API fica no repositório `Barbearia - Front` (React
 - [Tempo real (WebSocket)](#-tempo-real-websocket)
 - [Formato de erros](#-formato-de-erros)
 - [Testes](#-testes)
+- [Rumo à produção](#-rumo-à-produção)
 - [Limitações conhecidas](#-limitações-conhecidas)
 
 ---
@@ -363,10 +364,91 @@ Os **76 testes** usam H2 em memória (modo MySQL) com **as mesmas migrations do 
 
 ---
 
+## 🚀 Rumo à produção
+
+A ideia é colocar o sistema para rodar numa barbearia de verdade, com clientes de verdade. **É viável, mas em etapas:** a parte funcional (fila, concorrência, migrations, tempo real) está sólida e coberta por testes; o que impede o uso com clientes reais hoje é **segurança e dados pessoais**, não funcionalidade.
+
+### Veredito
+
+| Etapa | Situação |
+|---|---|
+| Uso local / demonstração | ✅ Pronto |
+| Ambiente de teste (staging) com dados fictícios | ✅ Pode subir já, depois de [configurar o profile de produção](#2-configuração-segura) |
+| **Piloto numa barbearia, com clientes reais** | ⛔ Só depois de concluir a **Fase 1 (bloqueadores)** abaixo |
+| Operação contínua / mais de uma barbearia | Depois das Fases 2 e 3 |
+
+Recomendação: depois da Fase 1, fazer um **piloto controlado** (uma barbearia, poucos barbeiros, horário reduzido) antes de abrir para todo mundo. O sistema suporta uma única instância da API com folga para esse porte.
+
+### Fase 1 — Bloqueadores (obrigatório antes de qualquer cliente real)
+
+#### 1. Autenticação e autorização em toda a API
+Hoje só `POST /barbeiros/login` verifica algo, e ele não gera token: **o restante da API é aberto**. Na prática, qualquer pessoa que descubra a URL consegue:
+- listar nome e telefone de **todos os clientes** (`GET /clientes`) e buscar por id ou telefone;
+- apagar clientes (`DELETE /clientes/{id}`), desativar barbeiros e serviços;
+- mudar o status de qualquer agendamento, inclusive finalizar ou cancelar o atendimento de outra pessoa.
+
+A fazer:
+- [ ] Login do barbeiro passar a devolver um **token** (JWT ou sessão) e as rotas do balcão (`/barbeiros/*/fila/proximo`, `PATCH /agendamentos/*/status`, CRUD de barbeiros e serviços, listagens gerais) exigirem esse token.
+- [ ] Definir como o **cliente** se identifica. Hoje é só pelo telefone, ou seja, qualquer um se passa por qualquer cliente. Opções: código por SMS/WhatsApp, ou um link/QR code da própria barbearia.
+- [ ] O cliente só poder ver e cancelar **os próprios** agendamentos e a **própria** posição.
+- [ ] Remover dos retornos públicos os dados pessoais de outros clientes (a fila pública deve mostrar, no máximo, o primeiro nome).
+
+#### 2. Configuração segura
+- [ ] Criar um **profile `prod`**. Hoje `spring.profiles.active=dev` vem fixo no `application.properties`, o que liga o log de SQL e a abertura automática do Swagger.
+- [ ] Nesse profile, desligar o log de SQL, manter `ddl-auto=validate` e usar nível de log `INFO`.
+- [ ] Desativar ou proteger o **Swagger/OpenAPI** em produção.
+- [ ] Criar um **usuário de banco dedicado** com permissões só no schema `barbearia` (não usar `root`) e uma senha forte e nova.
+- [ ] Guardar segredos no gerenciador de segredos/variáveis de ambiente da hospedagem; nunca no repositório.
+- [ ] Trocar as senhas iniciais dos barbeiros (as de desenvolvimento não devem ir para produção).
+
+#### 3. Tráfego seguro
+- [ ] **HTTPS obrigatório** (proxy reverso como Nginx/Caddy/Traefik com certificado Let's Encrypt), e `wss://` para o WebSocket.
+- [ ] `CORS_ALLOWED_ORIGINS` apenas com o domínio real do front.
+- [ ] Configurar o Spring para confiar no proxy (`server.forward-headers-strategy`) **e** ajustar o bloqueio de login para usar o IP real. Sem isso, atrás do proxy todos os usuários parecem ter o mesmo IP e 5 erros bloqueiam o login de todos.
+
+#### 4. Dados pessoais (LGPD)
+O sistema guarda nome e telefone, que são dados pessoais.
+- [ ] Política de privacidade e aviso/consentimento no cadastro.
+- [ ] Processo para o titular pedir exclusão dos dados (a anonimização já existe, falta o fluxo/endpoint autenticado).
+- [ ] Definir o prazo de retenção. O job de 90 dias já existe e ajuda; confirmar se esse prazo é o desejado.
+
+#### 5. Backup
+- [ ] Backup automático e diário do MySQL, **com teste de restauração**. Sem backup testado, um erro de operação apaga o histórico da barbearia.
+
+### Fase 2 — Operação (necessário para manter no ar com confiança)
+
+- [ ] **Deploy reproduzível:** `Dockerfile`, `docker-compose` (API + MySQL) e um guia de deploy.
+- [ ] **CI no GitHub Actions** rodando `./mvnw clean test` a cada push/PR.
+- [ ] **Testes contra MySQL de verdade** (Testcontainers). Hoje os testes usam H2 em modo MySQL; os testes de concorrência da fila foram validados manualmente no MySQL, mas o ideal é que isso rode no CI, já que o comportamento de locks difere entre bancos.
+- [ ] **Health check e monitoramento:** Spring Boot Actuator (`/actuator/health`) e alerta de queda.
+- [ ] **Logs estruturados** e centralizados, sem dados pessoais; retenção definida.
+- [ ] **Fuso horário explícito.** As datas são `LocalDateTime` sem fuso, então "agora", `@Future` e os jobs dependem do relógio do servidor. Fixar o fuso da JVM e do banco (ex: `America/Recife`) para evitar horários deslocados em hospedagem na nuvem, que costuma usar UTC.
+- [ ] **Limite de requisições** além do login (ex: cadastro de clientes e entrada na fila), para barrar spam e abuso.
+- [ ] **Paginação** em `GET /agendamentos` e `GET /clientes`: hoje retornam tudo, e o histórico só cresce.
+- [ ] **Alterar/redefinir a senha do barbeiro** por um fluxo autenticado. Hoje ela só é definida na primeira subida (`BARBEIROS_SENHAS_INICIAIS`); trocar exige mexer no banco.
+- [ ] **Trilha de auditoria:** registrar quem mudou o status de cada atendimento.
+
+### Fase 3 — Escala e evolução
+
+- [ ] **Várias instâncias da API:** hoje o broker do WebSocket e o contador de tentativas de login são em memória, e os jobs agendados rodariam em duplicidade. Exigiria broker externo (RabbitMQ), contador compartilhado (Redis/banco) e bloqueio de jobs (ShedLock).
+- [ ] Credenciais individuais mais fortes que um PIN de 6 dígitos (ex: usuário e senha, ou 2FA), principalmente com mais de uma barbearia.
+- [ ] Multi-barbearia (multi-tenant), se o produto crescer.
+- [ ] Conflito de horário entre agendamentos do mesmo barbeiro e vínculo de quais serviços cada barbeiro oferece.
+- [ ] Notificações (push/WhatsApp) quando o cliente for o próximo.
+- [ ] Métricas de negócio (tempo médio de espera, atendimentos por barbeiro).
+
+### Como acompanhar
+
+Sugestão: transformar cada item acima em uma **issue** do GitHub, agrupadas em milestones (`Fase 1 — Piloto`, `Fase 2 — Operação`, `Fase 3 — Escala`). Ao concluir um item, marque aqui no README.
+
+---
+
 ## ⚠️ Limitações conhecidas
 
-- **Só o login do barbeiro existe**: o restante da API não exige token nem sessão. Quem chamar `PATCH /agendamentos/{id}/status` direto consegue mudar status. Proteger os endpoints é o próximo passo.
-- O bloqueio de tentativas de login e o broker WebSocket são **em memória** (uma instância). O bloqueio usa o IP da conexão, então atrás de um proxy todos aparecem com o mesmo IP.
+Detalhes do comportamento atual, independentes do roadmap acima:
+
+- O bloqueio de tentativas de login e o broker WebSocket são **em memória** (uma instância).
+- O bloqueio de login usa o IP da conexão (`getRemoteAddr`, não `X-Forwarded-For`, que pode ser forjado).
 - Não há controle de **conflito de horário** entre agendamentos do mesmo barbeiro.
 - Não há vínculo de **quais serviços cada barbeiro oferece**.
 - Agendamentos anteriores ao cadastro de serviços têm `servico_id` nulo.
