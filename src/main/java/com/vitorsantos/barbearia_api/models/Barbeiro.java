@@ -6,12 +6,12 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-@Data
-@AllArgsConstructor
+@Getter
+@Setter
 @NoArgsConstructor
 @Entity
 @Table(name = "tb_barbeiros")
@@ -27,9 +27,13 @@ public class Barbeiro {
 
   /**
    * Controla se o barbeiro está ativo/trabalhando. Um barbeiro inativo não
-   * deve aparecer nas telas de fila nem receber novos agendamentos.
+   * aparece no painel de filas nem recebe novos clientes/agendamentos.
    * Default true — todo barbeiro cadastrado começa ativo.
    */
   @Column(name = "ativo", nullable = false)
   private boolean ativo = true;
+
+  /** Hash BCrypt da senha de acesso ao balcão; nunca é exposto pela API. */
+  @Column(name = "senha_hash", length = 100)
+  private String senhaHash;
 }
