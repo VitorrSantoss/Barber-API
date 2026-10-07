@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <title>Teste WebSocket - Fila da Barbearia</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
+    input, button { font-family: monospace; font-size: 14px; padding: 6px; }
+    #log { white-space: pre-wrap; border-top: 1px solid #333; margin-top: 15px; padding-top: 15px; }
+    .erro { color: #f55; }
+  </style>
+</head>
+<body>
+  <h2>Teste: Fila em tempo real (WebSocket)</h2>
+
+  <label>ID do barbeiro: </label>
+  <input id="barbeiroId" type="number" value="1">
+  <button onclick="conectar()">Conectar e assinar</button>
+  <button onclick="desconectar()">Desconectar</button>
+
+  <div id="log"></div>
+
+  <script>
+    let stompClient = null;
+
+    function log(msg, classe) {
+      const el = document.getElementById('log');
+      const linha = document.createElement('div');
+      if (classe) linha.className = classe;
+      linha.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      el.prepend(linha);
+    }
+
+    function conectar() {
+      const barbeiroId = document.getElementById('barbeiroId').value;
+      const socket = new SockJS('/ws');
+      stompClient = Stomp.over(socket);
+
+      stompClient.connect({}, () => {
+        log('Conectado ao WebSocket.');
+
+        stompClient.subscribe(`/topic/fila/${barbeiroId}`, (mensagem) => {
+          const fila = JSON.parse(mensagem.body);
+          log('Fila atualizada recebida:\n' + JSON.stringify(fila, null, 2));
+        });
+
+        log(`Inscrito em /topic/fila/${barbeiroId}. Agora mude o status de um agendamento desse barbeiro (via Swagger em /swagger-ui/index.html) e veja a atualização chegar aqui sozinha.`);
+      }, (erro) => {
+        log('Erro na conexão: ' + erro, 'erro');
+      });
+    }
+
+    function desconectar() {
+      if (stompClient !== null) {
+        stompClient.disconnect();
+        log('Desconectado.');
+      }
+    }
+  </script>
+</body>
+</html>
