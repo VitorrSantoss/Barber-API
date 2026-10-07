@@ -3,18 +3,20 @@ package com.vitorsantos.barbearia_api.service;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.vitorsantos.barbearia_api.dto.AgendamentoRequestDTO;
 import com.vitorsantos.barbearia_api.dto.AgendamentoResponseDTO;
+import com.vitorsantos.barbearia_api.dto.PosicaoFilaDTO;
 import com.vitorsantos.barbearia_api.enums.ErrorCode;
 import com.vitorsantos.barbearia_api.enums.StatusAgendamento;
 import com.vitorsantos.barbearia_api.exception.ResourceNotFoundException;
 import com.vitorsantos.barbearia_api.models.Agendamento;
 import com.vitorsantos.barbearia_api.models.Barbeiro;
 import com.vitorsantos.barbearia_api.models.Cliente;
+import com.vitorsantos.barbearia_api.models.Servico;
 import com.vitorsantos.barbearia_api.repository.AgendamentoRepository;
-import com.vitorsantos.barbearia_api.repository.BarbeiroRepository;
-import com.vitorsantos.barbearia_api.repository.ClienteRepository;
 
 import lombok.RequiredArgsConstructor;
 
@@ -23,66 +25,72 @@ import lombok.RequiredArgsConstructor;
 public class AgendamentoService {
 
   private final AgendamentoRepository agendamentoRepository;
-  private final ClienteRepository clienteRepository;
-  private final BarbeiroRepository barbeiroRepository;
+  private final ClienteService clienteService;
+  private final BarbeiroService barbeiroService;
+  private final ServicoService servicoService;
+  private final FilaService filaService;
 
+  @Transactional(readOnly = true)
   public List<AgendamentoResponseDTO> listarAgendamentos() {
-    return agendamentoRepository.findAll().stream()
+    return agendamentoRepository.findAllByOrderByDataHoraDesc().stream()
         .map(AgendamentoResponseDTO::fromEntity)
         .toList();
   }
 
+  @Transactional(readOnly = true)
+  public AgendamentoResponseDTO buscarPorId(Long id) {
+    return AgendamentoResponseDTO.fromEntity(buscarOuFalhar(id));
+  }
+
+  @Transactional(readOnly = true)
+  public PosicaoFilaDTO consultarPosicao(Long id) {
+    return filaService.consultarPosicao(buscarOuFalhar(id));
+  }
+
+  /**
+   * Horário marcado: nasce AGENDADO e não afeta a fila ainda — o job
+   * automático o coloca na fila quando a data/hora chegar.
+   */
+  @Transactional(isolation = Isolation.READ_COMMITTED)
   public AgendamentoResponseDTO cadastrarAgendamento(AgendamentoRequestDTO dto) {
-    Cliente cliente = clienteRepository.findById(dto.clienteId())
-        .orElseThrow(() -> new ResourceNotFoundException(
-            "Cliente não encontrado com o ID: " + dto.clienteId(),
-            ErrorCode.CLIENTE_NAO_ENCONTRADO));
+    Cliente cliente = clienteService.buscarParaAtualizacaoOuFalhar(dto.clienteId());
+    Barbeiro barbeiro = barbeiroService.buscarParaAtualizacaoOuFalhar(dto.barbeiroId());
+    Servico servico = servicoService.buscarOuFalhar(dto.servicoId());
 
-    Barbeiro barbeiro = barbeiroRepository.findById(dto.barbeiroId())
-        .orElseThrow(() -> new ResourceNotFoundException(
-            "Barbeiro não encontrado com o ID: " + dto.barbeiroId(),
-            ErrorCode.BARBEIRO_NAO_ENCONTRADO));
+    filaService.validarBarbeiroAtivo(barbeiro);
+    filaService.validarServicoAtivo(servico);
 
-    Agendamento agendamento = new Agendamento();
-    agendamento.setCliente(cliente);
-    agendamento.setBarbeiro(barbeiro);
-    agendamento.setDataHora(dto.dataHora());
-    agendamento.setStatusAgendamento(StatusAgendamento.AGENDADO);
-    agendamento.setConfirmadoPeloCliente(false);
-
-    Agendamento agendamentoSalvo = agendamentoRepository.save(agendamento);
-    return AgendamentoResponseDTO.fromEntity(agendamentoSalvo);
+    cliente.registrarAcesso();
+    Agendamento agendamento = Agendamento.agendar(cliente, barbeiro, servico, dto.dataHora());
+    return AgendamentoResponseDTO.fromEntity(agendamentoRepository.save(agendamento));
   }
 
   /**
    * Transição manual de status (ex: EM_ATENDIMENTO -> FINALIZADO, feita
-   * pelo barbeiro). A transição AGENDADO -> AGUARDANDO também pode
-   * acontecer por aqui, mas na prática o job automático já faz isso —
-   * esse endpoint continua existindo para os outros passos do fluxo.
+   * pelo barbeiro). As regras da fila ficam no FilaService.
    */
+  @Transactional(isolation = Isolation.READ_COMMITTED)
   public AgendamentoResponseDTO atualizarStatus(Long id, StatusAgendamento novoStatus) {
     Agendamento agendamento = buscarOuFalhar(id);
-    agendamento.mudarStatus(novoStatus);
-    Agendamento agendamentoAtualizado = agendamentoRepository.save(agendamento);
-    return AgendamentoResponseDTO.fromEntity(agendamentoAtualizado);
+    return AgendamentoResponseDTO.fromEntity(filaService.mudarStatus(agendamento, novoStatus));
   }
 
   /**
-   * Confirmação de presença feita pelo cliente ANTES do dia chegar.
-   * Não muda o status — só marca o selo que a fila exibe pro barbeiro.
+   * Confirmação de presença não muda status nem a ordem da fila — é só o
+   * selo que o barbeiro vê.
    */
+  @Transactional
   public AgendamentoResponseDTO confirmarPresenca(Long id) {
     Agendamento agendamento = buscarOuFalhar(id);
     agendamento.confirmarPresenca();
-    Agendamento agendamentoAtualizado = agendamentoRepository.save(agendamento);
-    return AgendamentoResponseDTO.fromEntity(agendamentoAtualizado);
+    agendamento.getCliente().registrarAcesso();
+    return AgendamentoResponseDTO.fromEntity(agendamentoRepository.saveAndFlush(agendamento));
   }
 
   private Agendamento buscarOuFalhar(Long id) {
-    return agendamentoRepository.findById(id)
+    return agendamentoRepository.findComDetalhesById(id)
         .orElseThrow(() -> new ResourceNotFoundException(
             "Agendamento não encontrado com o ID: " + id,
             ErrorCode.AGENDAMENTO_NAO_ENCONTRADO));
   }
-
 }
